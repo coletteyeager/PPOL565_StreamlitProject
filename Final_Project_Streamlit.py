@@ -8,6 +8,19 @@ from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
+from sklearn import tree
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn import preprocessing as pp 
+from sklearn.compose import ColumnTransformer 
+from sklearn.model_selection import cross_validate
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import KFold
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import recall_score
+from sklearn.metrics import confusion_matrix 
+from sklearn.decomposition import PCA
 
 st.set_option('deprecation.showPyplotGlobalUse', False)
 
@@ -118,6 +131,8 @@ census_df['Family_Income_actual'] = census_df.Family_Income_category.replace({1:
 
 # Create dummy variables for categorical variables
 census_df = pd.get_dummies(census_df, columns = ['Geographic_Region', 'Race', 'Education_Completed'], drop_first = True)
+# Drop people younger than 18 - can't vote
+census_df = census_df[census_df.Age >= 18]
 
 
 with st.sidebar:
@@ -138,7 +153,8 @@ if dataset:
 if summary:
 # Print out info about the data
     st.header("Summary")
-    st.write("Number of observations:", census_df.shape[0], ",  Number of features:", census_df.shape[1])
+    st.write(f"Number of observations: {census_df.shape[0]}")
+    st.write(f"Number of features: {census_df.shape[1]}")
     
     st.subheader("Summary of the data features:")
     st.write(census_df.describe())
@@ -169,27 +185,142 @@ if machine_learning:
         df.dropna(inplace = True)
         df.reset_index(drop=True, inplace=True)
         
-        X = df.drop([dependent], axis = 1)
+        X = df.drop([dependent, 'State'], axis = 1)
         y = df[dependent]
         return(X,y)
     
     if dependent == "Voted":
         X, y = set_data('Voted', 'Registered_to_Vote')
+        classnames = ['Did Not Vote', 'Voted']
     else:
         X, y = set_data('Registered_to_Vote', 'Voted')
+        classnames = [ 'Not Registered', 'Registered']
     
     ### Split data
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=777)
-    st.header("Machine Learning")
-    st.write("X train:")
-    st.dataframe(X_train.head())
-    st.write("Y train:")
-    st.dataframe(y_train.head())
 
     model = st.sidebar.selectbox("Choose a machine learning algorithm", options = ("Logistic Regression", "SVM", "Decision Tree", 
                                                                                    "KNN", "Compare all four"))
-    if model == "Logistic Regression":
-        mod = LogisticRegression()
+    n_neighbors = range(1,11)
+    depths = range(1,11)
+    c_options = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0]
+    
+    def plot_validation(train_acc, test_acc, parameters, parameter_name, lab):
+        plt.plot(parameters, train_acc, label="training accuracy")
+        plt.plot(parameters, test_acc, label="test accuracy")
+        plt.ylabel("Accuracy")
+        plt.xlabel(f"{parameter_name}")
+        plt.title(f'Validation Curve for {lab} Model')
+        plt.legend()
+        plt.show()
+        st.pyplot()
+    
+    if model == "Compare all four":
+        # Create Pipeline to compare all methods
+        pipe = Pipeline([('model',None)])
+        search_space = [
+            # Logistic Regression
+            {'model' : [LogisticRegression()],
+             'model__C': c_options},
+            
+            # SVM
+            {'model' : [SVC()],
+             'model__C': c_options},
+    
+            # KNN with K tuning param
+            {'model' : [KNeighborsClassifier()],
+             'model__n_neighbors': n_neighbors},
+    
+            # Decision Tree with the Max Depth Param
+            {'model': [DecisionTreeClassifier()],
+             'model__max_depth': depths},
+        ]
+        # (5) Put it all together in the grid search
+        search = GridSearchCV(pipe, search_space, scoring='accuracy', cv = 5)
+        search.fit(X_train,y_train)
+        st.write("The best model is:", search.best_params_)
+        st.write(f"The highest training accuracy is: {round(search.best_score_, 4)}")
+        st.write(f"Test score: {round(search.score(X_test, y_test), 4)}")
+        st.stop()
+    elif model == "Logistic Regression":
+        param_name = "C" 
+        param_number = st.sidebar.select_slider("Choose regularization value for C", options = c_options, value = 1.0)
+        mod = LogisticRegression(C = param_number)
+        train_acc = [LogisticRegression(C=each).fit(X_train, y_train).score(X_train, y_train) 
+                      for each in c_options]
+        test_acc = [LogisticRegression(C=each).fit(X_train, y_train).score(X_test, y_test) 
+                      for each in c_options]
+        if st.sidebar.checkbox("View Validation Curve"):
+            st.subheader("Comparing Parameters")
+            plot_validation(train_acc, test_acc, c_options, "C", "Logistic Regression")
+    elif model == "SVM":
+        param_name = "C" 
+        param_number = st.sidebar.select_slider("Choose regularization value for C", options = c_options, value = 1.0)
+        mod = SVC(C = param_number)
+        train_acc = [SVC(C=each).fit(X_train, y_train).score(X_train, y_train) 
+                      for each in c_options]
+        test_acc = [SVC(C=each).fit(X_train, y_train).score(X_test, y_test) 
+                      for each in c_options]
+        if st.sidebar.checkbox("View Validation Curve"):
+            st.subheader("Comparing Parameters")
+            plot_validation(train_acc, test_acc, c_options, "C", "SVM")
+    elif model == "Decision Tree":
+        param_name = "Max Depth" 
+        param_number = st.sidebar.slider("Choose a number for the max depths of the tree", 1, 10, value = 4)
+        mod = DecisionTreeClassifier(max_depth = param_number)
+        train_acc = [DecisionTreeClassifier(max_depth=each).fit(X_train, y_train).score(X_train, y_train) 
+                      for each in range(1,11)]
+        test_acc = [DecisionTreeClassifier(max_depth=each).fit(X_train, y_train).score(X_test, y_test) 
+                      for each in range(1,11)]
+        if st.sidebar.checkbox("View Validation Curve"):
+            st.subheader("Comparing Parameters")
+            plot_validation(train_acc, test_acc, range(1,11), "Max Depth", "Decision Tree")
+    elif model == "KNN":
+        param_name = "Neighbors" 
+        param_number = st.sidebar.slider("Choose a number of neighbors", 1, 10, value = 5)
+        mod = KNeighborsClassifier(n_neighbors = param_number)
+        train_acc = [KNeighborsClassifier(n_neighbors=each).fit(X_train, y_train).score(X_train, y_train) 
+                      for each in n_neighbors]
+        test_acc = [KNeighborsClassifier(n_neighbors=each).fit(X_train, y_train).score(X_test, y_test) 
+                      for each in n_neighbors]
+        if st.sidebar.checkbox("View Validation Curve"):
+            st.subheader("Comparing Parameters")
+            plot_validation(train_acc, test_acc, n_neighbors, "Neighbors", "KNN")
+    mod.fit(X_train, y_train)
+    if st.sidebar.checkbox("View Accuracy Scores"):
+        # Fit model and get accuracy for specific parameters  
+        y_pred = mod.predict(X_test)
+        acc = accuracy_score(y_test, y_pred)
+        st.subheader(f"Accuracy Scores for {param_name} = {param_number}")
+        st.write(f"Training score: {round(mod.score(X_train, y_train), 4)}")
+        st.write(f"Test score: {round(mod.score(X_test, y_test), 4)}")
+    
+        scores = cross_val_score(mod, X_test, y_test, cv=5)
+        st.write(f"Mean CV score: {round(scores.mean(), 4)}")
+    
+        st.write(f"Recall score {round(recall_score(y_test, y_pred), 4)}")
+    
+        st.write("Confusion Matrix:")
+        st.dataframe(pd.DataFrame(confusion_matrix(y_test, y_pred),
+                columns=["Predicted negative", "Predicted positive"],
+                index=["Actual negative","Actual positive"]))
+    
+    if model == "Decision Tree":
+        if st.sidebar.checkbox("View Decision Tree"):
+            st.subheader("Decision Tree Visualization")
+            fig = plt.figure(figsize = (100, 35))
+            _ = tree.plot_tree(mod, 
+                               feature_names = X.columns,
+                               class_names = classnames,
+                               filled = True,
+                               impurity = True,
+                               fontsize = 70)
+            st.pyplot()
+         
+        
+   
+        
+        
             
     
     
